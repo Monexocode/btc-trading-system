@@ -1,0 +1,71 @@
+name: BTC Trading Pipeline
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Entry mode preset'
+        required: false
+        default: 'full_system'
+        type: choice
+        options:
+          - full_system
+          - scalper
+          - swing_trader
+          - breakout_hunter
+          - conservative
+          - price_action
+          - momentum
+      dry_run:
+        description: 'Dry run (no Airtable upload)'
+        required: false
+        default: false
+        type: boolean
+      skip_signals:
+        description: 'Skip 15-min signal uploads'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run trading pipeline
+        env:
+          AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
+        run: |
+          cd src
+          MODE="${{ github.event.inputs.mode || 'full_system' }}"
+          DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
+          SKIP_SIGNALS="${{ github.event.inputs.skip_signals || 'false' }}"
+          
+          ARGS="--mode $MODE"
+          
+          if [ "$DRY_RUN" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          
+          if [ "$SKIP_SIGNALS" = "true" ]; then
+            ARGS="$ARGS --no-signals"
+          fi
+          
+          python main.py $ARGS
