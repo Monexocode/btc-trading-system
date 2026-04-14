@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3 
 """
 Airtable Client for BTC Trading System
 Handles all Airtable API interactions for both daily data and 15-min signals.
