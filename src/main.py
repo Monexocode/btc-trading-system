@@ -42,21 +42,23 @@ ENTRY_MODES = {
         'description': 'High confidence entries only'
     },
     'price_action': {
-        'threshold': 5.0,
+        'threshold': 3.0,
         'risk_reward': 1.5,
         'description': 'Pure price action focus'
     },
     'momentum': {
-        'threshold': 5.0,
+        'threshold': 4.0,
         'risk_reward': 1.5,
         'description': 'Momentum-based entries'
     },
     'volume_profile': {
-        'threshold': 5.0,
+        'threshold': 4.0,
         'risk_reward': 1.5,
         'description': 'Volume profile focus'
     }
 }
+
+_EMA_TREND_MAP = {'bullish': 1, 'neutral': 0, 'bearish': -1}
 
 
 def determine_signal(score: float, threshold: float) -> str:
@@ -97,7 +99,7 @@ def run_pipeline(
     # Initialize components
     fetcher = DataFetcher()
     scorer = ScoringEngine()
-    airtable = AirtableClient()
+    airtable = None if dry_run else AirtableClient()
     
     results = {
         'timestamp': datetime.now().isoformat(),
@@ -109,7 +111,7 @@ def run_pipeline(
     
     try:
         # Step 1: Fetch market data
-        print("📊 Fetching market data...")
+        print("Fetching market data...")
         market_data = fetcher.fetch_all_data()
         results['market_data'] = market_data
         print(f"   BTC Price: ${market_data.get('btc_price', 'N/A'):,.2f}")
@@ -117,7 +119,7 @@ def run_pipeline(
         print(f"   Funding Rate: {market_data.get('funding_rate', 'N/A'):.4f}%")
         
         # Step 2: Calculate scores
-        print("\n🧮 Calculating scores...")
+        print("\nCalculating scores...")
         scores = scorer.calculate_all_scores(market_data)
         results['scores'] = scores
         
@@ -130,46 +132,83 @@ def run_pipeline(
         # Step 3: Determine signal
         signal = determine_signal(total_score, threshold)
         results['signal'] = signal
-        print(f"\n🚦 Signal: {signal} (threshold: ±{threshold})")
+        print(f"\nSignal: {signal} (threshold: ±{threshold})")
         
         # Step 4: Upload to Airtable
         if not dry_run:
-            print("\n☁️ Uploading to Airtable...")
-            
-            # Upload daily data
-            daily_result = airtable.upload_to_airtable(market_data, scores)
+            print("\nUploading to Airtable...")
+
+            # Build daily record using FIELD_IDS field name keys
+            daily_data = {
+                'btc': market_data.get('btc_price'),
+                'oi': market_data.get('oi_total'),
+                'cme_oi': market_data.get('oi_cme'),
+                'funding': market_data.get('funding_rate'),
+                'cvd_futs': market_data.get('cvd_futures'),
+                'cvd_spot': market_data.get('cvd_spot'),
+                'liqs_prev': market_data.get('liquidations_24h'),
+                'etf': market_data.get('etf_flow'),
+                'poc': market_data.get('poc'),
+                'vwap': market_data.get('vwap'),
+                # EMA trend field is type number: 1=bullish, 0=neutral, -1=bearish
+                'ema_trend': _EMA_TREND_MAP.get(market_data.get('ema_trend', 'neutral'), 0),
+                'kc_bb_squeeze': 1 if market_data.get('squeeze') else 0,
+                'kc_positioning': market_data.get('kc_position'),
+                'bb_positioning': market_data.get('bb_position'),
+                'es': market_data.get('es'),
+                'nq': market_data.get('nq'),
+                'dxy': market_data.get('dxy'),
+                'gold': market_data.get('gold'),
+                'vix': market_data.get('vix'),
+                'bvix': market_data.get('bviv'),
+                'btc_d': market_data.get('btc_dominance'),
+                'strength_tw': scores.get('tpi'),
+                'synergy_tw': scores.get('synergy'),
+                'vol_1_5': 1 if market_data.get('volume_spike') else 0,
+                'normal_box': 1 if market_data.get('box_high') is not None else 0,
+                'breaking_point': (
+                    1 if any([market_data.get('box_break_up'), market_data.get('swing_high_break'),
+                              market_data.get('pdh_break'), market_data.get('pwh_break')])
+                    else -1 if any([market_data.get('box_break_down'), market_data.get('swing_low_break'),
+                                    market_data.get('pdl_break'), market_data.get('pwl_break')])
+                    else 0
+                ),
+                'vwap_band': market_data.get('vwap_pos_percent'),
+            }
+            # Remove None values to avoid overwriting Velo-patched fields
+            daily_data = {k: v for k, v in daily_data.items() if v is not None}
+
+            daily_result = airtable.upsert_daily_data(daily_data)
             results['daily_upload'] = daily_result
             print(f"   Daily data: {'✓' if daily_result else '✗'}")
-            
+
             # Upload 15-min signal if enabled
             if upload_signals:
-                signal_data = {
-                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M'),
-                    'btc_price': market_data.get('btc_price', 0),
-                    'signal': signal,
-                    'total_score': total_score,
-                    'entry_mode': mode,
-                    'direction_score': scores.get('direction_score', 0),
-                    'momentum_score': scores.get('momentum_score', 0),
-                    'breakout_score': scores.get('breakout_score', 0),
-                    'price_action_score': scores.get('price_action_score', 0),
-                    'key_level_score': scores.get('key_level_score', 0),
-                    'daily_tpi': scores.get('tpi', 0),
-                    'daily_oi_trend': market_data.get('oi_trend', 'neutral'),
-                    'notes': f"Auto-generated via {mode} mode"
-                }
-                signal_result = airtable.upload_15min_signal(signal_data)
+                signal_result = airtable.upload_15min_signal(
+                    btc_price=market_data.get('btc_price', 0),
+                    total_score=total_score,
+                    signal=signal,
+                    entry_mode=mode,
+                    direction_score=scores.get('direction_score', 0),
+                    momentum_score=scores.get('momentum_score', 0),
+                    breakout_score=scores.get('breakout_score', 0),
+                    price_action_score=scores.get('price_action_score', 0),
+                    key_level_score=scores.get('key_level_score', 0),
+                    daily_tpi=scores.get('tpi'),
+                    daily_oi_trend=market_data.get('oi_trend', 'neutral'),
+                    notes=f"Auto-generated via {mode} mode",
+                )
                 results['signal_upload'] = signal_result
                 print(f"   15-min signal: {'✓' if signal_result else '✗'}")
         else:
-            print("\n⏸️ Dry run - skipping Airtable upload")
+            print("\nDry run - skipping Airtable upload")
         
         results['success'] = True
-        print(f"\n✅ Pipeline completed successfully!")
+        print(f"\nPipeline completed successfully!")
         
     except Exception as e:
         results['errors'].append(str(e))
-        print(f"\n❌ Error: {e}")
+        print(f"\nError: {e}")
         raise
     
     return results
@@ -223,7 +262,7 @@ def main():
     
     # Run pipeline
     if args.continuous:
-        print("🔄 Running in continuous mode (every 30 minutes)")
+        print("Running in continuous mode (every 30 minutes)")
         print("   Press Ctrl+C to stop\n")
         while True:
             try:
@@ -232,13 +271,13 @@ def main():
                     dry_run=args.dry_run,
                     upload_signals=not args.no_signals
                 )
-                print(f"\n⏳ Waiting 30 minutes until next run...")
+                print(f"\nWaiting 30 minutes until next run...")
                 time.sleep(1800)  # 30 minutes
             except KeyboardInterrupt:
-                print("\n\n👋 Stopped by user")
+                print("\n\nStopped by user")
                 break
             except Exception as e:
-                print(f"\n⚠️ Error in continuous run: {e}")
+                print(f"\nError in continuous run: {e}")
                 print("   Retrying in 5 minutes...")
                 time.sleep(300)
     else:
