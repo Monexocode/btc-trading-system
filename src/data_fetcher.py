@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
-Data Fetcher for BTC Trading System
-Fetches real market data from Binance, yfinance, CoinGecko, and Deribit.
-Velo OI/CVD fields are left None — patched separately via Make.com.
+Data Fetcher for BTC Trading System.
 
-Uses api.binance.us (US-compliant) for spot data so GitHub Actions
-runners in the US are not geo-blocked (HTTP 451 from api.binance.com).
+Spot price / OHLCV   : api.binance.us (US-compliant, no geo-block)
+OI + Funding         : Coinalyze REST (fapi.binance.com is geo-blocked on GitHub Actions US runners)
+CVD futures klines   : fapi.binance.com in try/except (non-fatal if blocked)
+TradFi               : yfinance
+Crypto market        : CoinGecko
+Implied vol          : Deribit DVOL
+Liquidations / ETF   : None (Velo patched separately via Make.com)
 """
 
+import os
 import requests
 import yfinance as yf
 import pandas as pd
@@ -19,10 +23,12 @@ from typing import Dict, Any, Optional
 # --------------------------------------------------------------------------- #
 # Constants
 # --------------------------------------------------------------------------- #
-BINANCE_SPOT    = "https://api.binance.us"   # US-accessible (same API format)
-BINANCE_FUTURES = "https://fapi.binance.com"
+BINANCE_SPOT    = "https://api.binance.us"    # US-compliant (no geo-block)
+BINANCE_FUTURES = "https://fapi.binance.com"  # 451 from GitHub Actions; only used in try/except
 COINGECKO       = "https://api.coingecko.com/api/v3"
 DERIBIT         = "https://www.deribit.com/api/v2"
+COINALYZE       = "https://api.coinalyze.net/v1"
+COINALYZE_KEY   = os.environ.get("COINALYZE_API_KEY")  # set as GitHub Actions secret
 
 HEADERS = {
     "User-Agent": "btc-trading-system/6.0 (github.com/Monexocode/btc-trading-system)"
@@ -36,6 +42,18 @@ def _get(url: str, params: dict = None, timeout: int = 10) -> Any:
     resp = requests.get(url, params=params, headers=HEADERS, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
+
+
+def _coinalyze(endpoint: str, params: dict = None, timeout: int = 15) -> Any:
+    """Coinalyze REST call; returns None on any error."""
+    if not COINALYZE_KEY:
+        return None
+    p = dict(params or {})
+    p["api_key"] = COINALYZE_KEY
+    try:
+        return _get(f"{COINALYZE}/{endpoint}", params=p, timeout=timeout)
+    except Exception:
+        return None
 
 
 def _ema(series: pd.Series, period: int) -> pd.Series:
@@ -240,7 +258,7 @@ def _parse_klines(data) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 
 class DataFetcher:
-    """Fetches real market data from Binance, yfinance, CoinGecko, Deribit."""
+    """Fetches real market data. Spot from Binance.US, OI/funding from Coinalyze."""
 
     def __init__(self):
         self.last_fetch: Optional[datetime] = None
@@ -250,29 +268,12 @@ class DataFetcher:
         self._prev_oi: Optional[float] = None
 
     # ------------------------------------------------------------------ #
-    # Binance
+    # Binance.US (spot — no geo-block)
     # ------------------------------------------------------------------ #
 
     def fetch_btc_price(self) -> float:
         data = _get(f"{BINANCE_SPOT}/api/v3/ticker/price", {"symbol": "BTCUSDT"})
         return float(data["price"])
-
-    def fetch_funding_rate(self) -> float:
-        data = _get(f"{BINANCE_FUTURES}/fapi/v1/fundingRate",
-                    {"symbol": "BTCUSDT", "limit": 1})
-        return float(data[0]["fundingRate"]) * 100  # as percentage
-
-    def fetch_open_interest(self) -> Dict[str, Any]:
-        data = _get(f"{BINANCE_FUTURES}/fapi/v1/openInterest", {"symbol": "BTCUSDT"})
-        oi_btc = float(data["openInterest"])
-        price  = self.fetch_btc_price()
-        oi_usd = oi_btc * price / 1e9  # billions USD
-        return {
-            "total": round(oi_usd, 2),
-            "cme":   None,
-            "ratio": None,
-            "raw_btc": oi_btc,
-        }
 
     def fetch_ohlcv(self, interval: str = "15m", limit: int = 200) -> pd.DataFrame:
         """Binance.US spot klines with taker_buy_base for CVD spot."""
@@ -281,15 +282,8 @@ class DataFetcher:
         })
         return _parse_klines(data)
 
-    def fetch_futures_ohlcv(self, interval: str = "15m", limit: int = 200) -> pd.DataFrame:
-        """Binance USDT-M perpetual futures klines with taker_buy_base for CVD futures."""
-        data = _get(f"{BINANCE_FUTURES}/fapi/v1/klines", {
-            "symbol": "BTCUSDT", "interval": interval, "limit": limit,
-        })
-        return _parse_klines(data)
-
     def fetch_daily_weekly_levels(self) -> Dict[str, Optional[float]]:
-        """Fetch PDH/PDL/PWH/PWL from Binance daily and weekly klines."""
+        """PDH/PDL/PWH/PWL from Binance.US daily and weekly klines."""
         result: Dict[str, Optional[float]] = {
             "pdh": None, "pdl": None, "pwh": None, "pwl": None
         }
@@ -310,6 +304,50 @@ class DataFetcher:
         except Exception:
             pass
         return result
+
+    # ------------------------------------------------------------------ #
+    # Binance Futures (fapi.binance.com — 451 on GitHub Actions US runners)
+    # Only used in try/except for CVD futures klines
+    # ------------------------------------------------------------------ #
+
+    def fetch_futures_ohlcv(self, interval: str = "15m", limit: int = 200) -> pd.DataFrame:
+        """Binance USDT-M perp klines with taker_buy_base for CVD futures.
+        Wrapped in try/except at call site — non-fatal if geo-blocked."""
+        data = _get(f"{BINANCE_FUTURES}/fapi/v1/klines", {
+            "symbol": "BTCUSDT", "interval": interval, "limit": limit,
+        })
+        return _parse_klines(data)
+
+    # ------------------------------------------------------------------ #
+    # Coinalyze (OI + Funding — works from GitHub Actions)
+    # ------------------------------------------------------------------ #
+
+    def fetch_open_interest(self) -> Dict[str, Any]:
+        """OI from Coinalyze (primary) with None fallback."""
+        oi_usd  = None
+        cme_usd = None
+
+        raw = _coinalyze("open-interest", {"symbols": "BTCUSDT_PERP.6"})
+        if raw and isinstance(raw, list) and len(raw) > 0:
+            oi_usd = round(raw[0].get("value", 0) / 1e9, 2)
+
+        cme = _coinalyze("open-interest", {"symbols": "BTC_USD.9"})
+        if cme and isinstance(cme, list) and len(cme) > 0:
+            cme_usd = round(cme[0].get("value", 0) / 1e9, 2)
+
+        return {
+            "total":   oi_usd,
+            "cme":     cme_usd,
+            "ratio":   None,
+            "raw_btc": None,
+        }
+
+    def fetch_funding_rate(self) -> float:
+        """Funding rate from Coinalyze (primary), returns 0.0 on failure."""
+        raw = _coinalyze("current-funding-rate", {"symbols": "BTCUSDT_PERP.6"})
+        if raw and isinstance(raw, list) and len(raw) > 0:
+            return float(raw[0].get("value", 0)) * 100  # as percentage
+        return 0.0
 
     # ------------------------------------------------------------------ #
     # Technical indicators from OHLCV
@@ -584,17 +622,18 @@ class DataFetcher:
         print("   Fetching BTC price from Binance.US...")
         btc_price = self.fetch_btc_price()
 
-        print("   Fetching OI from Binance futures...")
+        print("   Fetching OI from Coinalyze...")
         oi_data = self.fetch_open_interest()
 
         print("   Fetching 15m spot OHLCV from Binance.US...")
         ohlcv = self.fetch_ohlcv(interval="15m", limit=200)
 
-        print("   Fetching 15m futures OHLCV from Binance (for CVD)...")
+        print("   Fetching 15m futures OHLCV from Binance (CVD, non-fatal if blocked)...")
+        futures_ohlcv = None
         try:
             futures_ohlcv = self.fetch_futures_ohlcv(interval="15m", limit=200)
-        except Exception:
-            futures_ohlcv = None
+        except Exception as e:
+            print(f"   Futures OHLCV skipped: {e}")
 
         print("   Fetching daily/weekly levels from Binance.US...")
         daily_weekly = self.fetch_daily_weekly_levels()
@@ -602,7 +641,7 @@ class DataFetcher:
         print("   Computing technicals (EMA/VWAP/KC/BB/squeeze/box/swing/CVD)...")
         technicals = self.compute_technicals(ohlcv, daily_weekly, futures_df=futures_ohlcv)
 
-        print("   Fetching funding rate from Binance futures...")
+        print("   Fetching funding rate from Coinalyze...")
         funding = self.fetch_funding_rate()
 
         print("   Fetching TradFi data (yfinance: ES/NQ/DXY/GOLD/VIX)...")
