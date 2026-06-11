@@ -161,6 +161,17 @@ def run_pipeline(
                 'btc_d': market_data.get('btc_dominance'),
                 'strength_tw': scores.get('tpi'),
                 'synergy_tw': scores.get('synergy'),
+                # Technical indicator fields (already have Airtable field IDs)
+                'vol_1_5': 1 if market_data.get('volume_spike') else 0,
+                'normal_box': 1 if market_data.get('box_high') is not None else 0,
+                'breaking_point': (
+                    1 if any([market_data.get('box_break_up'), market_data.get('swing_high_break'),
+                              market_data.get('pdh_break'), market_data.get('pwh_break')])
+                    else -1 if any([market_data.get('box_break_down'), market_data.get('swing_low_break'),
+                                    market_data.get('pdl_break'), market_data.get('pwl_break')])
+                    else 0
+                ),
+                'vwap_band': market_data.get('vwap_pos_percent'),
             }
             # Remove None values to avoid overwriting Velo-patched fields
             daily_data = {k: v for k, v in daily_data.items() if v is not None}
