@@ -42,17 +42,17 @@ ENTRY_MODES = {
         'description': 'High confidence entries only'
     },
     'price_action': {
-        'threshold': 5.0,
+        'threshold': 3.0,
         'risk_reward': 1.5,
         'description': 'Pure price action focus'
     },
     'momentum': {
-        'threshold': 5.0,
+        'threshold': 4.0,
         'risk_reward': 1.5,
         'description': 'Momentum-based entries'
     },
     'volume_profile': {
-        'threshold': 5.0,
+        'threshold': 4.0,
         'risk_reward': 1.5,
         'description': 'Volume profile focus'
     }
