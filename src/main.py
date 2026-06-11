@@ -97,7 +97,7 @@ def run_pipeline(
     # Initialize components
     fetcher = DataFetcher()
     scorer = ScoringEngine()
-    airtable = AirtableClient()
+    airtable = None if dry_run else AirtableClient()
     
     results = {
         'timestamp': datetime.now().isoformat(),
@@ -135,30 +135,56 @@ def run_pipeline(
         # Step 4: Upload to Airtable
         if not dry_run:
             print("\n☁️ Uploading to Airtable...")
-            
-            # Upload daily data
-            daily_result = airtable.upload_to_airtable(market_data, scores)
+
+            # Build daily record using FIELD_IDS field name keys
+            daily_data = {
+                'btc': market_data.get('btc_price'),
+                'oi': market_data.get('oi_total'),
+                'cme_oi': market_data.get('oi_cme'),
+                'funding': market_data.get('funding_rate'),
+                'cvd_futs': market_data.get('cvd_futures'),
+                'cvd_spot': market_data.get('cvd_spot'),
+                'liqs_prev': market_data.get('liquidations_24h'),
+                'etf': market_data.get('etf_flow'),
+                'poc': market_data.get('poc'),
+                'vwap': market_data.get('vwap'),
+                'ema_trend': market_data.get('ema_trend'),
+                'kc_bb_squeeze': 1 if market_data.get('squeeze') else 0,
+                'kc_positioning': market_data.get('kc_position'),
+                'bb_positioning': market_data.get('bb_position'),
+                'es': market_data.get('es'),
+                'nq': market_data.get('nq'),
+                'dxy': market_data.get('dxy'),
+                'gold': market_data.get('gold'),
+                'vix': market_data.get('vix'),
+                'bvix': market_data.get('bviv'),
+                'btc_d': market_data.get('btc_dominance'),
+                'strength_tw': scores.get('tpi'),
+                'synergy_tw': scores.get('synergy'),
+            }
+            # Remove None values to avoid overwriting Velo-patched fields
+            daily_data = {k: v for k, v in daily_data.items() if v is not None}
+
+            daily_result = airtable.upsert_daily_data(daily_data)
             results['daily_upload'] = daily_result
             print(f"   Daily data: {'✓' if daily_result else '✗'}")
-            
+
             # Upload 15-min signal if enabled
             if upload_signals:
-                signal_data = {
-                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M'),
-                    'btc_price': market_data.get('btc_price', 0),
-                    'signal': signal,
-                    'total_score': total_score,
-                    'entry_mode': mode,
-                    'direction_score': scores.get('direction_score', 0),
-                    'momentum_score': scores.get('momentum_score', 0),
-                    'breakout_score': scores.get('breakout_score', 0),
-                    'price_action_score': scores.get('price_action_score', 0),
-                    'key_level_score': scores.get('key_level_score', 0),
-                    'daily_tpi': scores.get('tpi', 0),
-                    'daily_oi_trend': market_data.get('oi_trend', 'neutral'),
-                    'notes': f"Auto-generated via {mode} mode"
-                }
-                signal_result = airtable.upload_15min_signal(signal_data)
+                signal_result = airtable.upload_15min_signal(
+                    btc_price=market_data.get('btc_price', 0),
+                    total_score=total_score,
+                    signal=signal,
+                    entry_mode=mode,
+                    direction_score=scores.get('direction_score', 0),
+                    momentum_score=scores.get('momentum_score', 0),
+                    breakout_score=scores.get('breakout_score', 0),
+                    price_action_score=scores.get('price_action_score', 0),
+                    key_level_score=scores.get('key_level_score', 0),
+                    daily_tpi=scores.get('tpi'),
+                    daily_oi_trend=market_data.get('oi_trend', 'neutral'),
+                    notes=f"Auto-generated via {mode} mode",
+                )
                 results['signal_upload'] = signal_result
                 print(f"   15-min signal: {'✓' if signal_result else '✗'}")
         else:

@@ -72,35 +72,35 @@ class ScoringEngine:
         """
         score = 0.0
         
-        # CVD analysis
-        cvd_futures = data.get('cvd_futures', 0)
-        cvd_spot = data.get('cvd_spot', 0)
-        
+        # CVD analysis (None when Velo patch not yet applied)
+        cvd_futures = data.get('cvd_futures') or 0
+        cvd_spot = data.get('cvd_spot') or 0
+
         if cvd_futures > 200:
             score += 2.0
         elif cvd_futures < -200:
             score -= 2.0
-        
+
         if cvd_spot > 100:
             score += 1.5
         elif cvd_spot < -100:
             score -= 1.5
-        
+
         # CVD divergence (futures vs spot)
         if cvd_futures > 0 and cvd_spot > 0:
             score += 1.0  # Aligned bullish
         elif cvd_futures < 0 and cvd_spot < 0:
             score -= 1.0  # Aligned bearish
-        
-        # Liquidation analysis
-        liq_ratio = data.get('liquidation_ratio', 1)
+
+        # Liquidation analysis (None when Velo patch not yet applied)
+        liq_ratio = data.get('liquidation_ratio') or 1
         if liq_ratio > 1.5:
             score -= 1.0  # More longs liquidated
         elif liq_ratio < 0.67:
             score += 1.0  # More shorts liquidated
-        
-        # ETF flow
-        etf_flow = data.get('etf_flow', 0)
+
+        # ETF flow (None when no paid source)
+        etf_flow = data.get('etf_flow') or 0
         if etf_flow > 100:
             score += 1.5
         elif etf_flow < -100:
@@ -236,14 +236,14 @@ class ScoringEngine:
         if -0.01 <= funding <= 0.03:
             tpi += 1.0  # Healthy funding
         
-        # CVD alignment
-        cvd_futures = data.get('cvd_futures', 0)
-        cvd_spot = data.get('cvd_spot', 0)
+        # CVD alignment (None when Velo not yet patched)
+        cvd_futures = data.get('cvd_futures') or 0
+        cvd_spot = data.get('cvd_spot') or 0
         if (cvd_futures > 0 and cvd_spot > 0) or (cvd_futures < 0 and cvd_spot < 0):
             tpi += 0.5  # CVD aligned
-        
-        # ETF positive
-        etf_flow = data.get('etf_flow', 0)
+
+        # ETF positive (None when no paid source)
+        etf_flow = data.get('etf_flow') or 0
         if etf_flow > 0:
             tpi += 0.5
         
