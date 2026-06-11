@@ -61,6 +61,13 @@ ENTRY_MODES = {
 _EMA_TREND_MAP = {'bullish': 1, 'neutral': 0, 'bearish': -1}
 
 
+def _fmt(value, fmt, fallback='N/A'):
+    """Format value with fmt spec, returning fallback string if value is None."""
+    if value is None:
+        return fallback
+    return format(value, fmt)
+
+
 def determine_signal(score: float, threshold: float) -> str:
     """Determine BUY/SELL/STALL based on score and threshold."""
     if score >= threshold:
@@ -114,9 +121,9 @@ def run_pipeline(
         print("Fetching market data...")
         market_data = fetcher.fetch_all_data()
         results['market_data'] = market_data
-        print(f"   BTC Price: ${market_data.get('btc_price', 'N/A'):,.2f}")
-        print(f"   Open Interest: ${market_data.get('oi_total', 'N/A'):.2f}B")
-        print(f"   Funding Rate: {market_data.get('funding_rate', 'N/A'):.4f}%")
+        print(f"   BTC Price: ${_fmt(market_data.get('btc_price'), ',.2f')}")
+        print(f"   Open Interest: ${_fmt(market_data.get('oi_total'), '.2f')}B")
+        print(f"   Funding Rate: {_fmt(market_data.get('funding_rate'), '.4f')}%")
         
         # Step 2: Calculate scores
         print("\nCalculating scores...")
