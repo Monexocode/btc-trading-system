@@ -84,33 +84,23 @@ def _bollinger(close: pd.Series, period: int = 20, std_dev: float = 2.0):
 
 
 def _vwap_with_daily_bands(df: pd.DataFrame) -> dict:
-    """
-    Daily-session VWAP with volume-weighted stdev band (Pine Script style).
-    Resets at UTC midnight. Returns values for the last bar.
-    """
     df = df.copy()
     df["_date"] = df.index.date
-
     tp = (df["high"] + df["low"] + df["close"]) / 3
     df["_tpv"] = tp * df["volume"]
     df["_cum_tpv"] = df.groupby("_date")["_tpv"].cumsum()
     df["_cum_vol"] = df.groupby("_date")["volume"].cumsum()
     df["_vwap"] = df["_cum_tpv"] / df["_cum_vol"]
-
     sq_dev   = (df["close"] - df["_vwap"]) ** 2
     vwap_std = sq_dev.rolling(14).mean().apply(np.sqrt)
-
     vwap_upper = df["_vwap"] + vwap_std
     vwap_lower = df["_vwap"] - vwap_std
-
     cur_vwap  = float(df["_vwap"].iloc[-1])
     cur_upper = float(vwap_upper.iloc[-1])
     cur_lower = float(vwap_lower.iloc[-1])
     cur_close = float(df["close"].iloc[-1])
-
     band_range = cur_upper - cur_lower
     pos_pct = (cur_close - cur_lower) / band_range * 100 if band_range > 0 else 50.0
-
     return {
         "vwap":            round(cur_vwap, 2),
         "vwap_upper_band": round(cur_upper, 2),
@@ -120,30 +110,22 @@ def _vwap_with_daily_bands(df: pd.DataFrame) -> dict:
 
 
 def _poc_vah_val(df: pd.DataFrame, num_bins: int = 50):
-    """
-    Approximate Point of Control, Value Area High/Low from price-volume.
-    Uses 70% of total volume as value area definition.
-    """
     low_price  = df["low"].min()
     high_price = df["high"].max()
     bins = np.linspace(low_price, high_price, num_bins + 1)
     bin_centers = (bins[:-1] + bins[1:]) / 2
-
     vol_per_bin = np.zeros(num_bins)
     for _, row in df.iterrows():
         in_range = (bin_centers >= row["low"]) & (bin_centers <= row["high"])
         count = in_range.sum()
         if count > 0:
             vol_per_bin[in_range] += row["volume"] / count
-
     poc_idx = int(np.argmax(vol_per_bin))
     poc = float(bin_centers[poc_idx])
-
     total_vol   = vol_per_bin.sum()
     target      = total_vol * 0.70
     accumulated = vol_per_bin[poc_idx]
     lo_idx = hi_idx = poc_idx
-
     while accumulated < target and (lo_idx > 0 or hi_idx < num_bins - 1):
         lo_next = vol_per_bin[lo_idx - 1] if lo_idx > 0 else -1
         hi_next = vol_per_bin[hi_idx + 1] if hi_idx < num_bins - 1 else -1
@@ -155,7 +137,6 @@ def _poc_vah_val(df: pd.DataFrame, num_bins: int = 50):
             accumulated += hi_next
         else:
             break
-
     return poc, float(bin_centers[hi_idx]), float(bin_centers[lo_idx])
 
 
@@ -165,18 +146,15 @@ def _compute_normal_box(df: pd.DataFrame, ema9: pd.Series, ema21: pd.Series) -> 
     low   = df["low"].values
     e9    = ema9.values
     e21   = ema21.values
-
     box_high = np.nan
     box_low  = np.nan
     in_box   = False
-
     for i in range(len(df)):
         c = close[i]
         if c == 0:
             continue
         ema_diff_pct = abs(e9[i] - e21[i]) / c * 100
         ema_near = 0.2 <= ema_diff_pct <= 0.5
-
         if ema_near:
             if np.isnan(box_high):
                 box_high = high[i]
@@ -189,16 +167,13 @@ def _compute_normal_box(df: pd.DataFrame, ema9: pd.Series, ema21: pd.Series) -> 
             in_box   = False
             box_high = np.nan
             box_low  = np.nan
-
     cur_close = float(close[-1])
-
     if np.isnan(box_high):
         return {
             "box_high": None, "box_low": None,
             "box_break_up": False, "box_break_down": False,
             "near_box_top": False, "near_box_bottom": False,
         }
-
     return {
         "box_high":       round(float(box_high), 2),
         "box_low":        round(float(box_low), 2),
@@ -214,23 +189,18 @@ def _compute_swing_levels(df: pd.DataFrame, lookback: int = 14) -> dict:
     low   = df["low"].values
     close = df["close"].values
     n = len(df)
-
     last_pivot_high = None
     last_pivot_low  = None
-
     for i in range(n - 1 - lookback, lookback - 1, -1):
         if high[i] == max(high[max(0, i - lookback):i + lookback + 1]):
             last_pivot_high = float(high[i])
             break
-
     for i in range(n - 1 - lookback, lookback - 1, -1):
         if low[i] == min(low[max(0, i - lookback):i + lookback + 1]):
             last_pivot_low = float(low[i])
             break
-
     cur_close  = float(close[-1])
     prev_close = float(close[-2]) if n >= 2 else cur_close
-
     return {
         "swing_high": last_pivot_high,
         "swing_low":  last_pivot_low,
@@ -306,13 +276,11 @@ class DataFetcher:
         return result
 
     # ------------------------------------------------------------------ #
-    # Binance Futures (fapi.binance.com — 451 on GitHub Actions US runners)
-    # Only used in try/except for CVD futures klines
+    # Binance Futures (non-fatal in try/except — 451 from GitHub Actions)
     # ------------------------------------------------------------------ #
 
     def fetch_futures_ohlcv(self, interval: str = "15m", limit: int = 200) -> pd.DataFrame:
-        """Binance USDT-M perp klines with taker_buy_base for CVD futures.
-        Wrapped in try/except at call site — non-fatal if geo-blocked."""
+        """Binance USDT-M perp klines. Caller wraps in try/except."""
         data = _get(f"{BINANCE_FUTURES}/fapi/v1/klines", {
             "symbol": "BTCUSDT", "interval": interval, "limit": limit,
         })
@@ -323,7 +291,7 @@ class DataFetcher:
     # ------------------------------------------------------------------ #
 
     def fetch_open_interest(self) -> Dict[str, Any]:
-        """OI from Coinalyze (primary) with None fallback."""
+        """OI from Coinalyze primary; returns None values if unavailable."""
         oi_usd  = None
         cme_usd = None
 
@@ -343,8 +311,9 @@ class DataFetcher:
         }
 
     def fetch_funding_rate(self) -> float:
-        """Funding rate from Coinalyze (primary), returns 0.0 on failure."""
-        raw = _coinalyze("current-funding-rate", {"symbols": "BTCUSDT_PERP.6"})
+        """Funding rate from Coinalyze. Returns 0.0 if unavailable."""
+        # Note: correct endpoint is 'funding-rate', not 'current-funding-rate'
+        raw = _coinalyze("funding-rate", {"symbols": "BTCUSDT_PERP.6"})
         if raw and isinstance(raw, list) and len(raw) > 0:
             return float(raw[0].get("value", 0)) * 100  # as percentage
         return 0.0
@@ -359,12 +328,6 @@ class DataFetcher:
         daily_weekly: Optional[Dict] = None,
         futures_df: Optional[pd.DataFrame] = None,
     ) -> Dict[str, Any]:
-        """
-        Compute all Pine Script indicators from 15m OHLCV.
-
-        df          — spot klines (with taker_buy_base for cvd_spot)
-        futures_df  — perpetual futures klines (with taker_buy_base for cvd_futures)
-        """
         close  = df["close"]
         high   = df["high"]
         low    = df["low"]
@@ -452,7 +415,6 @@ class DataFetcher:
         pwh_break = pwh is not None and prev_close <= pwh < cur_close
         pwl_break = pwl is not None and prev_close >= pwl > cur_close
 
-        # CVD from taker buy data (cumulative delta = buy flow - sell flow)
         cvd_futures = None
         cvd_spot    = None
         if futures_df is not None and "taker_buy_base" in futures_df.columns:
@@ -546,7 +508,7 @@ class DataFetcher:
             return {"btc_dominance": None, "stablecoin_supply_b": None}
 
     # ------------------------------------------------------------------ #
-    # Deribit (DVOL — BTC implied vol index)
+    # Deribit (DVOL)
     # ------------------------------------------------------------------ #
 
     def fetch_bviv(self) -> Optional[float]:
@@ -561,7 +523,7 @@ class DataFetcher:
             return None
 
     # ------------------------------------------------------------------ #
-    # Velo-only sources (patched via Make.com)
+    # Velo-only sources
     # ------------------------------------------------------------------ #
 
     def fetch_liquidations(self) -> Dict[str, Optional[float]]:
@@ -607,10 +569,6 @@ class DataFetcher:
     # ------------------------------------------------------------------ #
 
     def fetch_all_data(self) -> Dict[str, Any]:
-        """
-        Fetch all market data. Uses a 5-minute cache to avoid hammering APIs
-        on repeated calls within the same pipeline run.
-        """
         if (
             self.cached_data
             and self.last_fetch
@@ -628,7 +586,7 @@ class DataFetcher:
         print("   Fetching 15m spot OHLCV from Binance.US...")
         ohlcv = self.fetch_ohlcv(interval="15m", limit=200)
 
-        print("   Fetching 15m futures OHLCV from Binance (CVD, non-fatal if blocked)...")
+        print("   Fetching 15m futures OHLCV (CVD, non-fatal if blocked)...")
         futures_ohlcv = None
         try:
             futures_ohlcv = self.fetch_futures_ohlcv(interval="15m", limit=200)
@@ -653,42 +611,28 @@ class DataFetcher:
         print("   Fetching DVOL from Deribit...")
         bviv = self.fetch_bviv()
 
-        liquidations = self.fetch_liquidations()  # None — Velo via Make.com
-        etf_flow     = self.fetch_etf_flow()       # None — no free source
+        liquidations = self.fetch_liquidations()
+        etf_flow     = self.fetch_etf_flow()
 
         trends = self.determine_trends(btc_price, oi_data["total"])
 
         data: Dict[str, Any] = {
             "timestamp": datetime.now().isoformat(),
             "btc_price": round(btc_price, 2),
-
-            # Open Interest
             "oi_total":    oi_data["total"],
             "oi_cme":      oi_data["cme"],
             "oi_cme_ratio": oi_data["ratio"],
-
-            # Funding
             "funding_rate": round(funding, 6),
-
-            # Liquidations (None until Velo patch)
             "liquidations_24h":   liquidations["total_24h"],
             "liquidation_ratio":  liquidations["ratio"],
-
-            # CVD — computed from Binance taker data
             "cvd_futures": technicals.get("cvd_futures"),
             "cvd_spot":    technicals.get("cvd_spot"),
-
-            # ETF flow
             "etf_flow": etf_flow,
-
-            # Volume profile
             "poc": technicals["poc"],
             "vah": technicals["vah"],
             "val": technicals["val"],
             "vah_touched_today": technicals["vah_touched_today"],
             "val_touched_today": technicals["val_touched_today"],
-
-            # Technical indicators
             "vwap":            technicals["vwap"],
             "vwap_upper_band": technicals["vwap_upper_band"],
             "vwap_lower_band": technicals["vwap_lower_band"],
@@ -708,41 +652,29 @@ class DataFetcher:
             "bb_position":     technicals["bb_position"],
             "volume_spike":    technicals["volume_spike"],
             "candle_close_position": technicals["candle_close_position"],
-
-            # Normal box
             "box_high":       technicals["box_high"],
             "box_low":        technicals["box_low"],
             "box_break_up":   technicals["box_break_up"],
             "box_break_down": technicals["box_break_down"],
             "near_box_top":   technicals["near_box_top"],
             "near_box_bottom": technicals["near_box_bottom"],
-
-            # Swing levels
             "swing_high":       technicals["swing_high"],
             "swing_low":        technicals["swing_low"],
             "swing_high_break": technicals["swing_high_break"],
             "swing_low_break":  technicals["swing_low_break"],
-
-            # Previous day/week levels
             "pdh": technicals["pdh"], "pdl": technicals["pdl"],
             "pwh": technicals["pwh"], "pwl": technicals["pwl"],
             "pdh_break": technicals["pdh_break"],
             "pdl_break": technicals["pdl_break"],
             "pwh_break": technicals["pwh_break"],
             "pwl_break": technicals["pwl_break"],
-
-            # TradFi
             "es":   tradfi.get("es"),
             "nq":   tradfi.get("nq"),
             "dxy":  tradfi.get("dxy"),
             "gold": tradfi.get("gold"),
             "vix":  tradfi.get("vix"),
-
-            # Crypto market
             "btc_dominance":       crypto_market.get("btc_dominance"),
             "stablecoin_supply_b": crypto_market.get("stablecoin_supply_b"),
-
-            # Implied vol
             "bviv": bviv,
         }
 
