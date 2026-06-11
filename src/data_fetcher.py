@@ -3,6 +3,9 @@
 Data Fetcher for BTC Trading System
 Fetches real market data from Binance, yfinance, CoinGecko, and Deribit.
 Velo OI/CVD fields are left None — patched separately via Make.com.
+
+Uses api.binance.us (US-compliant) for spot data so GitHub Actions
+runners in the US are not geo-blocked (HTTP 451 from api.binance.com).
 """
 
 import requests
@@ -16,7 +19,7 @@ from typing import Dict, Any, Optional
 # --------------------------------------------------------------------------- #
 # Constants
 # --------------------------------------------------------------------------- #
-BINANCE_SPOT    = "https://api.binance.com"
+BINANCE_SPOT    = "https://api.binance.us"   # US-accessible (same API format)
 BINANCE_FUTURES = "https://fapi.binance.com"
 COINGECKO       = "https://api.coingecko.com/api/v3"
 DERIBIT         = "https://www.deribit.com/api/v2"
@@ -272,7 +275,7 @@ class DataFetcher:
         }
 
     def fetch_ohlcv(self, interval: str = "15m", limit: int = 200) -> pd.DataFrame:
-        """Binance spot klines with taker_buy_base for CVD spot."""
+        """Binance.US spot klines with taker_buy_base for CVD spot."""
         data = _get(f"{BINANCE_SPOT}/api/v3/klines", {
             "symbol": "BTCUSDT", "interval": interval, "limit": limit,
         })
@@ -578,13 +581,13 @@ class DataFetcher:
             print("   Using cached data...")
             return self.cached_data
 
-        print("   Fetching BTC price from Binance...")
+        print("   Fetching BTC price from Binance.US...")
         btc_price = self.fetch_btc_price()
 
         print("   Fetching OI from Binance futures...")
         oi_data = self.fetch_open_interest()
 
-        print("   Fetching 15m spot OHLCV from Binance...")
+        print("   Fetching 15m spot OHLCV from Binance.US...")
         ohlcv = self.fetch_ohlcv(interval="15m", limit=200)
 
         print("   Fetching 15m futures OHLCV from Binance (for CVD)...")
@@ -593,13 +596,13 @@ class DataFetcher:
         except Exception:
             futures_ohlcv = None
 
-        print("   Fetching daily/weekly levels from Binance...")
+        print("   Fetching daily/weekly levels from Binance.US...")
         daily_weekly = self.fetch_daily_weekly_levels()
 
         print("   Computing technicals (EMA/VWAP/KC/BB/squeeze/box/swing/CVD)...")
         technicals = self.compute_technicals(ohlcv, daily_weekly, futures_df=futures_ohlcv)
 
-        print("   Fetching funding rate from Binance...")
+        print("   Fetching funding rate from Binance futures...")
         funding = self.fetch_funding_rate()
 
         print("   Fetching TradFi data (yfinance: ES/NQ/DXY/GOLD/VIX)...")
