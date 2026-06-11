@@ -45,14 +45,18 @@ def _get(url: str, params: dict = None, timeout: int = 10) -> Any:
 
 
 def _coinalyze(endpoint: str, params: dict = None, timeout: int = 15) -> Any:
-    """Coinalyze REST call; returns None on any error."""
+    """Coinalyze REST call; returns None on any error and logs the failure."""
     if not COINALYZE_KEY:
         return None
     p = dict(params or {})
     p["api_key"] = COINALYZE_KEY
     try:
-        return _get(f"{COINALYZE}/{endpoint}", params=p, timeout=timeout)
-    except Exception:
+        result = _get(f"{COINALYZE}/{endpoint}", params=p, timeout=timeout)
+        if isinstance(result, list) and len(result) == 0:
+            print(f"   Coinalyze {endpoint}: empty list — check symbol format or API plan")
+        return result
+    except Exception as e:
+        print(f"   Coinalyze {endpoint} failed: {e}")
         return None
 
 
