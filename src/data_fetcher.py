@@ -6,14 +6,16 @@ Spot price / OHLCV   : api.binance.us (US-compliant, no geo-block)
 OI + Funding         : Coinalyze REST
                        Symbol: BTCUSDT_PERP.A (Binance USDT-M perp, per API docs)
                        OI uses convert_to_usd=true (base-asset-denominated by default)
-CVD futures klines   : fapi.binance.com in try/except (non-fatal if blocked)
+CVD futures          : fapi.binance.com try/except, fallback to Coinalyze buy-sell-volume
+CME OI               : cmegroup.com public settlements API
+Liquidations         : Coinalyze liquidation-history (yesterday, daily)
 TradFi               : yfinance
 Crypto market        : CoinGecko
 Implied vol          : Deribit DVOL
-Liquidations / ETF   : None (Velo patched separately via Make.com)
 """
 
 import os
+import time as _time
 import requests
 import yfinance as yf
 import pandas as pd
@@ -25,15 +27,13 @@ from typing import Dict, Any, Optional
 # --------------------------------------------------------------------------- #
 # Constants
 # --------------------------------------------------------------------------- #
-BINANCE_SPOT    = "https://api.binance.us"    # US-compliant (no geo-block)
-BINANCE_FUTURES = "https://fapi.binance.com"  # 451 from GitHub Actions; only used in try/except
+BINANCE_SPOT    = "https://api.binance.us"
+BINANCE_FUTURES = "https://fapi.binance.com"  # 451 from GitHub Actions; only in try/except
 COINGECKO       = "https://api.coingecko.com/api/v3"
 DERIBIT         = "https://www.deribit.com/api/v2"
 COINALYZE       = "https://api.coinalyze.net/v1"
 COINALYZE_KEY   = os.environ.get("COINALYZE_API_KEY")
-
-# Coinalyze symbol for Binance USDT-M perpetual (confirmed from API docs examples)
-BINANCE_PERP = "BTCUSDT_PERP.A"
+BINANCE_PERP    = "BTCUSDT_PERP.A"
 
 HEADERS = {
     "User-Agent": "btc-trading-system/6.0 (github.com/Monexocode/btc-trading-system)"
@@ -50,7 +50,6 @@ def _get(url: str, params: dict = None, timeout: int = 10) -> Any:
 
 
 def _coinalyze(endpoint: str, params: dict = None, timeout: int = 15) -> Any:
-    """Coinalyze REST call; returns None on any error."""
     if not COINALYZE_KEY:
         return None
     p = dict(params or {})
@@ -175,13 +174,13 @@ def _compute_normal_box(df: pd.DataFrame, ema9: pd.Series, ema21: pd.Series) -> 
             in_box   = False
             box_high = np.nan
             box_low  = np.nan
-    cur_close = float(close[-1])
     if np.isnan(box_high):
         return {
             "box_high": None, "box_low": None,
             "box_break_up": False, "box_break_down": False,
             "near_box_top": False, "near_box_bottom": False,
         }
+    cur_close = float(close[-1])
     return {
         "box_high":       round(float(box_high), 2),
         "box_low":        round(float(box_low), 2),
@@ -235,7 +234,6 @@ def _parse_klines(data) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 
 class DataFetcher:
-    """Fetches real market data. Spot from Binance.US, OI/funding from Coinalyze."""
 
     def __init__(self):
         self.last_fetch: Optional[datetime] = None
@@ -281,7 +279,6 @@ class DataFetcher:
         return _parse_klines(data)
 
     def fetch_open_interest(self) -> Dict[str, Any]:
-        """OI from Coinalyze with convert_to_usd=true (OI is BTC-denominated by default)."""
         oi_usd = None
         raw = _coinalyze("open-interest", {"symbols": BINANCE_PERP, "convert_to_usd": "true"})
         if raw and isinstance(raw, list) and len(raw) > 0:
@@ -289,10 +286,80 @@ class DataFetcher:
         return {"total": oi_usd, "cme": None, "ratio": None, "raw_btc": None}
 
     def fetch_funding_rate(self) -> float:
+        """Returns raw decimal funding rate, e.g. 0.002446 (not percent)."""
         raw = _coinalyze("funding-rate", {"symbols": BINANCE_PERP})
         if raw and isinstance(raw, list) and len(raw) > 0:
-            return float(raw[0].get("value", 0)) * 100
+            return float(raw[0].get("value", 0))
         return 0.0
+
+    def fetch_cme_oi(self, btc_price: float) -> Optional[float]:
+        """CME Bitcoin futures OI from cmegroup.com public settlements API."""
+        try:
+            r = requests.get(
+                "https://www.cmegroup.com/CmeWS/mvc/Settlements/futures/activeContracts/BTC",
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "application/json, text/plain, */*",
+                    "Referer": "https://www.cmegroup.com/",
+                },
+                timeout=15,
+            )
+            r.raise_for_status()
+            data = r.json()
+            contracts = data.get("settlements", data if isinstance(data, list) else [])
+            if not contracts:
+                print(f"   CME OI: unexpected format — {str(data)[:300]}")
+                return None
+            total = 0
+            for c in contracts:
+                raw_oi = c.get("openInt", c.get("openInterest", c.get("prevOI", "")))
+                if raw_oi:
+                    total += int(str(raw_oi).replace(",", "").strip() or "0")
+            if total <= 0:
+                return None
+            # Standard BTC futures: 5 BTC per contract
+            return round(total * 5 * btc_price / 1e9, 2)
+        except Exception as e:
+            print(f"   CME OI fetch failed: {e}")
+            return None
+
+    def fetch_cvd_futs_coinalyze(self) -> Optional[float]:
+        """CVD Futures from Coinalyze taker buy/sell volume delta."""
+        raw = _coinalyze("buy-sell-volume", {"symbols": BINANCE_PERP})
+        if raw and isinstance(raw, list) and len(raw) > 0:
+            item = raw[0]
+            buy_vol  = item.get("buy_volume",  item.get("buyVolume",  0)) or 0
+            sell_vol = item.get("sell_volume", item.get("sellVolume", 0)) or 0
+            if buy_vol or sell_vol:
+                return round(float(buy_vol) - float(sell_vol), 2)
+            val = item.get("value")
+            if val is not None:
+                return round(float(val), 2)
+        return None
+
+    def fetch_liqs_yesterday(self) -> Dict[str, Optional[float]]:
+        """Yesterday's liquidations from Coinalyze (daily interval, USD)."""
+        now_ts = int(_time.time())
+        raw = _coinalyze("liquidation-history", {
+            "symbols":        BINANCE_PERP,
+            "interval":       "daily",
+            "from":           now_ts - 2 * 86400,
+            "to":             now_ts - 86400,
+            "convert_to_usd": "true",
+        })
+        if raw and isinstance(raw, list) and len(raw) > 0:
+            bars = raw[0].get("history", [])
+            if bars:
+                bar       = bars[-1]
+                long_liq  = float(bar.get("l", 0) or 0)
+                short_liq = float(bar.get("s", 0) or 0)
+                total_liq = long_liq + short_liq
+                liq_price = bar.get("c")
+                return {
+                    "total_m": round(total_liq / 1e6, 2) if total_liq else None,
+                    "price":   round(float(liq_price), 2) if liq_price else None,
+                }
+        return {"total_m": None, "price": None}
 
     def compute_technicals(
         self,
@@ -345,8 +412,10 @@ class DataFetcher:
         ) if kc_range > 0 else False
         squeeze = bb_contracting and price_near_kc_edge
 
-        kc_position = "outside" if (cur_close > kc_upper or cur_close < kc_lower) else "inside"
-        bb_position = "outside" if (cur_close > bb_upper or cur_close < bb_lower) else "inside"
+        kc_position  = "outside" if (cur_close > kc_upper or cur_close < kc_lower) else "inside"
+        bb_position  = "outside" if (cur_close > bb_upper or cur_close < bb_lower) else "inside"
+        kc_pos_value = 1 if cur_close > kc_upper else -1 if cur_close < kc_lower else 0
+        bb_pos_value = 1 if cur_close > bb_upper else -1 if cur_close < bb_lower else 0
 
         avg_vol      = float(volume.rolling(20).mean().iloc[-1])
         volume_spike = float(volume.iloc[-1]) >= avg_vol * 1.5
@@ -402,10 +471,12 @@ class DataFetcher:
             "vwap_position":    vwap_position,
             "kc_upper": round(kc_upper, 2), "kc_lower": round(kc_lower, 2),
             "bb_upper": round(bb_upper, 2), "bb_lower": round(bb_lower, 2),
-            "squeeze":        squeeze,
-            "kc_position":    kc_position,
-            "bb_position":    bb_position,
-            "volume_spike":   volume_spike,
+            "squeeze":       squeeze,
+            "kc_position":   kc_position,
+            "bb_position":   bb_position,
+            "kc_pos_value":  kc_pos_value,
+            "bb_pos_value":  bb_pos_value,
+            "volume_spike":  volume_spike,
             "candle_close_position": candle_close_position,
             "poc": round(poc, 2), "vah": round(vah, 2), "val": round(val, 2),
             "vah_touched_today": vah_touched_today,
@@ -450,7 +521,7 @@ class DataFetcher:
                 )
                 stablecoin_mc = round(total_mc * stable_pct / 100 / 1e9, 2)
             return {
-                "btc_dominance":     round(float(btc_d), 2) if btc_d else None,
+                "btc_dominance":       round(float(btc_d), 2) if btc_d else None,
                 "stablecoin_supply_b": stablecoin_mc,
             }
         except Exception:
@@ -462,9 +533,6 @@ class DataFetcher:
             return round(float(data["result"]["index_price"]), 2)
         except Exception:
             return None
-
-    def fetch_liquidations(self) -> Dict[str, Optional[float]]:
-        return {"total_24h": None, "longs": None, "shorts": None, "ratio": None}
 
     def fetch_etf_flow(self) -> Optional[float]:
         return None
@@ -504,6 +572,15 @@ class DataFetcher:
         print("   Fetching OI from Coinalyze...")
         oi_data = self.fetch_open_interest()
 
+        print("   Fetching CME OI from CMEgroup.com...")
+        cme_oi = self.fetch_cme_oi(btc_price)
+
+        print("   Fetching CVD Futures from Coinalyze buy-sell volume...")
+        cvd_futs_ca = self.fetch_cvd_futs_coinalyze()
+
+        print("   Fetching yesterday's liquidations from Coinalyze...")
+        liqs = self.fetch_liqs_yesterday()
+
         print("   Fetching 15m spot OHLCV from Binance.US...")
         ohlcv = self.fetch_ohlcv(interval="15m", limit=200)
 
@@ -532,20 +609,20 @@ class DataFetcher:
         print("   Fetching DVOL from Deribit...")
         bviv = self.fetch_bviv()
 
-        liquidations = self.fetch_liquidations()
-        etf_flow     = self.fetch_etf_flow()
-        trends = self.determine_trends(btc_price, oi_data["total"])
+        etf_flow = self.fetch_etf_flow()
+        trends   = self.determine_trends(btc_price, oi_data["total"])
 
         data: Dict[str, Any] = {
-            "timestamp": datetime.now().isoformat(),
-            "btc_price": round(btc_price, 2),
+            "timestamp":   datetime.now().isoformat(),
+            "btc_price":   round(btc_price, 2),
             "oi_total":    oi_data["total"],
-            "oi_cme":      oi_data["cme"],
-            "oi_cme_ratio": oi_data["ratio"],
+            "oi_cme":      cme_oi,
+            "oi_cme_ratio": None,
             "funding_rate": round(funding, 6),
-            "liquidations_24h":   liquidations["total_24h"],
-            "liquidation_ratio":  liquidations["ratio"],
-            "cvd_futures": technicals.get("cvd_futures"),
+            "liquidations_24h":  liqs.get("total_m"),
+            "liqs_price":        liqs.get("price"),
+            "liquidation_ratio": None,
+            "cvd_futures": technicals.get("cvd_futures") or cvd_futs_ca,
             "cvd_spot":    technicals.get("cvd_spot"),
             "etf_flow": etf_flow,
             "poc": technicals["poc"], "vah": technicals["vah"], "val": technicals["val"],
@@ -559,11 +636,13 @@ class DataFetcher:
             "ema_trend":       technicals["ema_trend"],
             "ema9":  technicals["ema9"],  "ema21": technicals["ema21"],
             "ema50": technicals["ema50"], "ema200": technicals["ema200"],
-            "squeeze":     technicals["squeeze"],
-            "kc_upper":    technicals["kc_upper"],  "kc_lower": technicals["kc_lower"],
-            "bb_upper":    technicals["bb_upper"],  "bb_lower": technicals["bb_lower"],
-            "kc_position": technicals["kc_position"],
-            "bb_position": technicals["bb_position"],
+            "squeeze":      technicals["squeeze"],
+            "kc_upper":     technicals["kc_upper"],  "kc_lower": technicals["kc_lower"],
+            "bb_upper":     technicals["bb_upper"],  "bb_lower": technicals["bb_lower"],
+            "kc_position":  technicals["kc_position"],
+            "bb_position":  technicals["bb_position"],
+            "kc_pos_value": technicals["kc_pos_value"],
+            "bb_pos_value": technicals["bb_pos_value"],
             "volume_spike": technicals["volume_spike"],
             "candle_close_position": technicals["candle_close_position"],
             "box_high":       technicals["box_high"],      "box_low":  technicals["box_low"],

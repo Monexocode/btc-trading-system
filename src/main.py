@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 BTC Trading System v6 - Main Entry Point
-Converts TradingView Pine Script logic to Python with Airtable integration.
 """
 
 import argparse
@@ -14,163 +13,121 @@ from scoring_engine import ScoringEngine
 from airtable_client import AirtableClient
 
 
-# Entry mode presets with their configurations
 ENTRY_MODES = {
-    'full_system': {
-        'threshold': 5.0,
-        'risk_reward': 1.5,
-        'description': 'Full system with all indicators'
-    },
-    'scalper': {
-        'threshold': 3.0,
-        'risk_reward': 1.0,
-        'description': 'Quick entries, tight stops'
-    },
-    'swing_trader': {
-        'threshold': 5.0,
-        'risk_reward': 2.0,
-        'description': 'Longer holds, wider stops'
-    },
-    'breakout_hunter': {
-        'threshold': 4.0,
-        'risk_reward': 1.5,
-        'description': 'Focus on breakout signals'
-    },
-    'conservative': {
-        'threshold': 7.0,
-        'risk_reward': 2.0,
-        'description': 'High confidence entries only'
-    },
-    'price_action': {
-        'threshold': 3.0,
-        'risk_reward': 1.5,
-        'description': 'Pure price action focus'
-    },
-    'momentum': {
-        'threshold': 4.0,
-        'risk_reward': 1.5,
-        'description': 'Momentum-based entries'
-    },
-    'volume_profile': {
-        'threshold': 4.0,
-        'risk_reward': 1.5,
-        'description': 'Volume profile focus'
-    }
+    'full_system':     {'threshold': 5.0, 'risk_reward': 1.5, 'description': 'Full system with all indicators'},
+    'scalper':         {'threshold': 3.0, 'risk_reward': 1.0, 'description': 'Quick entries, tight stops'},
+    'swing_trader':    {'threshold': 5.0, 'risk_reward': 2.0, 'description': 'Longer holds, wider stops'},
+    'breakout_hunter': {'threshold': 4.0, 'risk_reward': 1.5, 'description': 'Focus on breakout signals'},
+    'conservative':    {'threshold': 7.0, 'risk_reward': 2.0, 'description': 'High confidence entries only'},
+    'price_action':    {'threshold': 3.0, 'risk_reward': 1.5, 'description': 'Pure price action focus'},
+    'momentum':        {'threshold': 4.0, 'risk_reward': 1.5, 'description': 'Momentum-based entries'},
+    'volume_profile':  {'threshold': 4.0, 'risk_reward': 1.5, 'description': 'Volume profile focus'},
 }
 
 _EMA_TREND_MAP = {'bullish': 1, 'neutral': 0, 'bearish': -1}
 
 
 def _fmt(value, fmt, fallback='N/A'):
-    """Format value with fmt spec, returning fallback string if value is None."""
     if value is None:
         return fallback
     return format(value, fmt)
 
 
 def determine_signal(score: float, threshold: float) -> str:
-    """Determine BUY/SELL/STALL based on score and threshold."""
     if score >= threshold:
         return "BUY"
     elif score <= -threshold:
         return "SELL"
-    else:
-        return "STALL"
+    return "STALL"
 
 
-def run_pipeline(
-    mode: str = 'full_system',
-    dry_run: bool = False,
-    upload_signals: bool = True
-) -> Dict[str, Any]:
-    """
-    Run the complete trading pipeline.
-    
-    Args:
-        mode: Entry mode preset name
-        dry_run: If True, don't upload to Airtable
-        upload_signals: If True, upload 15-min signals to Intra day table
-    
-    Returns:
-        Dictionary with pipeline results
-    """
+def run_pipeline(mode: str = 'full_system', dry_run: bool = False,
+                 upload_signals: bool = True) -> Dict[str, Any]:
     print(f"\n{'='*60}")
     print(f"BTC Trading System v6 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Mode: {mode} | Dry Run: {dry_run} | Signals: {upload_signals}")
     print(f"{'='*60}\n")
-    
-    # Get mode configuration
+
     mode_config = ENTRY_MODES.get(mode, ENTRY_MODES['full_system'])
-    threshold = mode_config['threshold']
-    
-    # Initialize components
-    fetcher = DataFetcher()
-    scorer = ScoringEngine()
+    threshold   = mode_config['threshold']
+
+    fetcher  = DataFetcher()
+    scorer   = ScoringEngine()
     airtable = None if dry_run else AirtableClient()
-    
+
     results = {
-        'timestamp': datetime.now().isoformat(),
-        'mode': mode,
+        'timestamp':   datetime.now().isoformat(),
+        'mode':        mode,
         'mode_config': mode_config,
-        'success': False,
-        'errors': []
+        'success':     False,
+        'errors':      [],
     }
-    
+
     try:
-        # Step 1: Fetch market data
         print("Fetching market data...")
         market_data = fetcher.fetch_all_data()
         results['market_data'] = market_data
         print(f"   BTC Price: ${_fmt(market_data.get('btc_price'), ',.2f')}")
         print(f"   Open Interest: ${_fmt(market_data.get('oi_total'), '.2f')}B")
-        print(f"   Funding Rate: {_fmt(market_data.get('funding_rate'), '.4f')}%")
-        
-        # Step 2: Calculate scores
+        print(f"   CME OI: ${_fmt(market_data.get('oi_cme'), '.2f')}B")
+        print(f"   Funding Rate: {_fmt(market_data.get('funding_rate'), '.6f')}")
+
         print("\nCalculating scores...")
         scores = scorer.calculate_all_scores(market_data)
         results['scores'] = scores
-        
+
         total_score = scores.get('total_score', 0)
         print(f"   Total Score: {total_score:.2f}")
         print(f"   Direction: {scores.get('direction_score', 0):.2f}")
         print(f"   Momentum: {scores.get('momentum_score', 0):.2f}")
         print(f"   Breakout: {scores.get('breakout_score', 0):.2f}")
-        
-        # Step 3: Determine signal
+
         signal = determine_signal(total_score, threshold)
         results['signal'] = signal
         print(f"\nSignal: {signal} (threshold: ±{threshold})")
-        
-        # Step 4: Upload to Airtable
+
         if not dry_run:
             print("\nUploading to Airtable...")
 
-            # Build daily record using FIELD_IDS field name keys
+            btc   = market_data.get('btc_price', 0)
+            vah_v = market_data.get('vah', 0) or 0
+            val_v = market_data.get('val', 0) or 0
+            vah_val_num = 1 if btc > vah_v else -1 if btc < val_v else 0
+
+            cvd_futs    = market_data.get('cvd_futures')
+            vwap_pos    = market_data.get('vwap_position', '')
+            if cvd_futs is not None:
+                price_oi_val = 1 if (cvd_futs > 0 and vwap_pos == 'above') else \
+                              -1 if (cvd_futs < 0 and vwap_pos == 'below') else 0
+            else:
+                price_oi_val = 0
+
             daily_data = {
-                'btc': market_data.get('btc_price'),
-                'oi': market_data.get('oi_total'),
-                'cme_oi': market_data.get('oi_cme'),
-                'funding': market_data.get('funding_rate'),
-                'cvd_futs': market_data.get('cvd_futures'),
-                'cvd_spot': market_data.get('cvd_spot'),
-                'liqs_prev': market_data.get('liquidations_24h'),
-                'etf': market_data.get('etf_flow'),
-                'poc': market_data.get('poc'),
-                'vwap': market_data.get('vwap'),
-                # EMA trend field is type number: 1=bullish, 0=neutral, -1=bearish
-                'ema_trend': _EMA_TREND_MAP.get(market_data.get('ema_trend', 'neutral'), 0),
+                'btc':           market_data.get('btc_price'),
+                'oi':            market_data.get('oi_total'),
+                'cme_oi':        market_data.get('oi_cme'),
+                'funding':       market_data.get('funding_rate'),
+                'cvd_futs':      market_data.get('cvd_futures'),
+                'cvd_spot':      market_data.get('cvd_spot'),
+                'liqs_prev':     market_data.get('liquidations_24h'),
+                'liqs_prev_price': market_data.get('liqs_price'),
+                'poc':           market_data.get('poc'),
+                'vwap':          market_data.get('vwap'),
+                'vah_val':       vah_val_num,
+                'price_oi':      price_oi_val,
+                'ema_trend':     _EMA_TREND_MAP.get(market_data.get('ema_trend', 'neutral'), 0),
                 'kc_bb_squeeze': 1 if market_data.get('squeeze') else 0,
-                'kc_positioning': market_data.get('kc_position'),
-                'bb_positioning': market_data.get('bb_position'),
-                'es': market_data.get('es'),
-                'nq': market_data.get('nq'),
-                'dxy': market_data.get('dxy'),
+                'kc_positioning': market_data.get('kc_pos_value', 0),
+                'bb_positioning': market_data.get('bb_pos_value', 0),
+                'es':   market_data.get('es'),
+                'nq':   market_data.get('nq'),
+                'dxy':  market_data.get('dxy'),
                 'gold': market_data.get('gold'),
-                'vix': market_data.get('vix'),
+                'vix':  market_data.get('vix'),
                 'bvix': market_data.get('bviv'),
                 'btc_d': market_data.get('btc_dominance'),
                 'strength_tw': scores.get('tpi'),
-                'synergy_tw': scores.get('synergy'),
+                'synergy_tw':  scores.get('synergy'),
                 'vol_1_5': 1 if market_data.get('volume_spike') else 0,
                 'normal_box': 1 if market_data.get('box_high') is not None else 0,
                 'breaking_point': (
@@ -182,14 +139,12 @@ def run_pipeline(
                 ),
                 'vwap_band': market_data.get('vwap_pos_percent'),
             }
-            # Remove None values to avoid overwriting Velo-patched fields
             daily_data = {k: v for k, v in daily_data.items() if v is not None}
 
             daily_result = airtable.upsert_daily_data(daily_data)
             results['daily_upload'] = daily_result
             print(f"   Daily data: {'✓' if daily_result else '✗'}")
 
-            # Upload 15-min signal if enabled
             if upload_signals:
                 signal_result = airtable.upload_15min_signal(
                     btc_price=market_data.get('btc_price', 0),
@@ -209,90 +164,50 @@ def run_pipeline(
                 print(f"   15-min signal: {'✓' if signal_result else '✗'}")
         else:
             print("\nDry run - skipping Airtable upload")
-        
+
         results['success'] = True
-        print(f"\nPipeline completed successfully!")
-        
+        print("\nPipeline completed successfully!")
+
     except Exception as e:
         results['errors'].append(str(e))
         print(f"\nError: {e}")
         raise
-    
+
     return results
 
 
 def main():
-    """Main entry point with CLI argument parsing."""
-    parser = argparse.ArgumentParser(
-        description='BTC Trading System v6 - Automated trading signals'
-    )
-    parser.add_argument(
-        '--mode', '-m',
-        choices=list(ENTRY_MODES.keys()),
-        default='full_system',
-        help='Entry mode preset (default: full_system)'
-    )
-    parser.add_argument(
-        '--dry-run', '-d',
-        action='store_true',
-        help='Run without uploading to Airtable'
-    )
-    parser.add_argument(
-        '--no-signals',
-        action='store_true',
-        help='Skip 15-min signal uploads (daily data only)'
-    )
-    parser.add_argument(
-        '--continuous', '-c',
-        action='store_true',
-        help='Run continuously every 30 minutes'
-    )
-    parser.add_argument(
-        '--list-modes',
-        action='store_true',
-        help='List all available entry modes and exit'
-    )
-    
+    parser = argparse.ArgumentParser(description='BTC Trading System v6')
+    parser.add_argument('--mode', '-m', choices=list(ENTRY_MODES.keys()), default='full_system')
+    parser.add_argument('--dry-run', '-d', action='store_true')
+    parser.add_argument('--no-signals', action='store_true')
+    parser.add_argument('--continuous', '-c', action='store_true')
+    parser.add_argument('--list-modes', action='store_true')
     args = parser.parse_args()
-    
-    # List modes and exit
+
     if args.list_modes:
         print("\nAvailable Entry Modes:")
-        print("-" * 50)
         for name, config in ENTRY_MODES.items():
-            print(f"  {name}:")
-            print(f"    Threshold: {config['threshold']}")
-            print(f"    R:R: {config['risk_reward']}")
-            print(f"    {config['description']}")
-            print()
+            print(f"  {name}: threshold={config['threshold']} — {config['description']}")
         return
-    
-    # Run pipeline
+
     if args.continuous:
         print("Running in continuous mode (every 30 minutes)")
-        print("   Press Ctrl+C to stop\n")
         while True:
             try:
-                run_pipeline(
-                    mode=args.mode,
-                    dry_run=args.dry_run,
-                    upload_signals=not args.no_signals
-                )
-                print(f"\nWaiting 30 minutes until next run...")
-                time.sleep(1800)  # 30 minutes
+                run_pipeline(mode=args.mode, dry_run=args.dry_run,
+                             upload_signals=not args.no_signals)
+                print("\nWaiting 30 minutes...")
+                time.sleep(1800)
             except KeyboardInterrupt:
-                print("\n\nStopped by user")
+                print("\nStopped by user")
                 break
             except Exception as e:
-                print(f"\nError in continuous run: {e}")
-                print("   Retrying in 5 minutes...")
+                print(f"\nError: {e} — retrying in 5 min")
                 time.sleep(300)
     else:
-        run_pipeline(
-            mode=args.mode,
-            dry_run=args.dry_run,
-            upload_signals=not args.no_signals
-        )
+        run_pipeline(mode=args.mode, dry_run=args.dry_run,
+                     upload_signals=not args.no_signals)
 
 
 if __name__ == '__main__':
