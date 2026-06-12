@@ -4,6 +4,7 @@ Data Fetcher for BTC Trading System.
 
 Spot price / OHLCV   : api.binance.us (US-compliant, no geo-block)
 OI + Funding         : Coinalyze REST (fapi.binance.com is geo-blocked on GitHub Actions US runners)
+                       Symbol: BTCUSDT_PERP.A  (Binance USDT-M perp, per Coinalyze API docs)
 CVD futures klines   : fapi.binance.com in try/except (non-fatal if blocked)
 TradFi               : yfinance
 Crypto market        : CoinGecko
@@ -30,6 +31,9 @@ DERIBIT         = "https://www.deribit.com/api/v2"
 COINALYZE       = "https://api.coinalyze.net/v1"
 COINALYZE_KEY   = os.environ.get("COINALYZE_API_KEY")  # set as GitHub Actions secret
 
+# Coinalyze symbol for Binance USDT-M perpetual (from API docs: BTCUSDT_PERP.A)
+BINANCE_PERP = "BTCUSDT_PERP.A"
+
 HEADERS = {
     "User-Agent": "btc-trading-system/6.0 (github.com/Monexocode/btc-trading-system)"
 }
@@ -53,7 +57,7 @@ def _coinalyze(endpoint: str, params: dict = None, timeout: int = 15) -> Any:
     try:
         result = _get(f"{COINALYZE}/{endpoint}", params=p, timeout=timeout)
         if isinstance(result, list) and len(result) == 0:
-            print(f"   Coinalyze {endpoint}: empty list — check symbol format or API plan")
+            print(f"   Coinalyze {endpoint}: empty list — check symbol or API plan")
         return result
     except Exception as e:
         print(f"   Coinalyze {endpoint} failed: {e}")
@@ -291,33 +295,21 @@ class DataFetcher:
         return _parse_klines(data)
 
     # ------------------------------------------------------------------ #
-    # Coinalyze (OI + Funding — works from GitHub Actions)
+    # Coinalyze (OI + Funding)
+    # Symbol BTCUSDT_PERP.A = Binance USDT-M perp (per Coinalyze API docs)
     # ------------------------------------------------------------------ #
 
     def fetch_open_interest(self) -> Dict[str, Any]:
-        """OI from Coinalyze primary; returns None values if unavailable."""
-        oi_usd  = None
-        cme_usd = None
-
-        raw = _coinalyze("open-interest", {"symbols": "BTCUSDT_PERP.6"})
+        """OI from Coinalyze. Returns None values if unavailable."""
+        oi_usd = None
+        raw = _coinalyze("open-interest", {"symbols": BINANCE_PERP})
         if raw and isinstance(raw, list) and len(raw) > 0:
             oi_usd = round(raw[0].get("value", 0) / 1e9, 2)
-
-        cme = _coinalyze("open-interest", {"symbols": "BTC_USD.9"})
-        if cme and isinstance(cme, list) and len(cme) > 0:
-            cme_usd = round(cme[0].get("value", 0) / 1e9, 2)
-
-        return {
-            "total":   oi_usd,
-            "cme":     cme_usd,
-            "ratio":   None,
-            "raw_btc": None,
-        }
+        return {"total": oi_usd, "cme": None, "ratio": None, "raw_btc": None}
 
     def fetch_funding_rate(self) -> float:
         """Funding rate from Coinalyze. Returns 0.0 if unavailable."""
-        # Note: correct endpoint is 'funding-rate', not 'current-funding-rate'
-        raw = _coinalyze("funding-rate", {"symbols": "BTCUSDT_PERP.6"})
+        raw = _coinalyze("funding-rate", {"symbols": BINANCE_PERP})
         if raw and isinstance(raw, list) and len(raw) > 0:
             return float(raw[0].get("value", 0)) * 100  # as percentage
         return 0.0
