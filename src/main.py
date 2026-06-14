@@ -111,8 +111,7 @@ def run_pipeline(mode: str = 'full_system', dry_run: bool = False,
                 'cvd_spot':      market_data.get('cvd_spot'),
                 'liqs_prev':     market_data.get('liquidations_24h'),
                 'liqs_prev_price': market_data.get('liqs_price'),
-                'poc':           market_data.get('poc'),
-                'vwap':          market_data.get('vwap'),
+                # poc/vwap/vwap_band omitted: tpi-pipeline owns those fields as normalized scores
                 'vah_val':       vah_val_num,
                 'price_oi':      price_oi_val,
                 'ema_trend':     _EMA_TREND_MAP.get(market_data.get('ema_trend', 'neutral'), 0),
@@ -137,7 +136,6 @@ def run_pipeline(mode: str = 'full_system', dry_run: bool = False,
                                     market_data.get('pdl_break'), market_data.get('pwl_break')])
                     else 0
                 ),
-                'vwap_band': market_data.get('vwap_pos_percent'),
             }
             daily_data = {k: v for k, v in daily_data.items() if v is not None}
 
