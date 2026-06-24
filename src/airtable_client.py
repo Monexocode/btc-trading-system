@@ -205,13 +205,14 @@ class AirtableClient:
             The created/updated record
         """
         today = datetime.now().strftime("%Y-%m-%d")
-        
+        record_name = f"{today} BTC/USDT"
+
         # Check if record for today exists
-        filter_formula = f"{{Name}}='{today}'"
+        filter_formula = f"{{Name}}='{record_name}'"
         existing = self.list_records(filter_formula=filter_formula, max_records=1)
-        
-        # Add name (date) to data
-        data["name"] = today
+
+        # Add name to data — must match tpi-pipeline upsert key format
+        data["name"] = record_name
         
         if existing:
             # Update existing record

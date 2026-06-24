@@ -16,8 +16,8 @@ from typing import Dict, Any, Optional
 # --------------------------------------------------------------------------- #
 # Constants
 # --------------------------------------------------------------------------- #
-BINANCE_SPOT    = "https://api.binance.com"
-BINANCE_FUTURES = "https://fapi.binance.com"
+BINANCE_SPOT    = "https://api.binance.us"    # US-compliant endpoint, no geo-block
+BINANCE_FUTURES = "https://fapi.binance.com"  # only used in try/except (may 451 from Actions)
 COINGECKO       = "https://api.coingecko.com/api/v3"
 DERIBIT         = "https://www.deribit.com/api/v2"
 
