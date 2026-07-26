@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 BTC Trading System v6 - Main Entry Point
-Converts TradingView Pine Script logic to Python with Airtable integration.
+Converts TradingView Pine Script logic to Python with Supabase integration.
 """
 
 import argparse
@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional
 
 from data_fetcher import DataFetcher
 from scoring_engine import ScoringEngine
-from airtable_client import AirtableClient
+from supabase_client import SupabaseClient
 
 
 # Entry mode presets with their configurations
@@ -78,7 +78,7 @@ def run_pipeline(
     
     Args:
         mode: Entry mode preset name
-        dry_run: If True, don't upload to Airtable
+        dry_run: If True, don't upload to Supabase
         upload_signals: If True, upload 15-min signals to Intra day table
     
     Returns:
@@ -96,7 +96,7 @@ def run_pipeline(
     # Initialize components
     fetcher = DataFetcher()
     scorer = ScoringEngine()
-    airtable = None if dry_run else AirtableClient()
+    db = None if dry_run else SupabaseClient()
     
     results = {
         'timestamp': datetime.now().isoformat(),
@@ -132,9 +132,9 @@ def run_pipeline(
         results['signal'] = signal
         print(f"\nSignal: {signal} (threshold: ±{threshold})")
 
-        # Step 4: Upload to Airtable
+        # Step 4: Upload to Supabase
         if not dry_run:
-            print("\nUploading to Airtable...")
+            print("\nUploading to Supabase...")
 
             # Build daily record — macro/price/CVD/OI/liqs only.
             # All technical indicator fields (poc, vwap, ema_trend, kc_bb_squeeze,
@@ -162,13 +162,13 @@ def run_pipeline(
             # Remove None values to avoid overwriting tpi-pipeline fields
             daily_data = {k: v for k, v in daily_data.items() if v is not None}
 
-            daily_result = airtable.upsert_daily_data(daily_data)
+            daily_result = db.upsert_daily_data(daily_data)
             results['daily_upload'] = daily_result
             print(f"   Daily data: {'✓' if daily_result else '✗'}")
 
             # Upload 15-min signal if enabled
             if upload_signals:
-                signal_result = airtable.upload_15min_signal(
+                signal_result = db.upload_15min_signal(
                     btc_price=market_data.get('btc_price', 0),
                     total_score=total_score,
                     signal=signal,
@@ -185,7 +185,7 @@ def run_pipeline(
                 results['signal_upload'] = signal_result
                 print(f"   15-min signal: {'✓' if signal_result else '✗'}")
         else:
-            print("\nDry run - skipping Airtable upload")
+            print("\nDry run - skipping Supabase upload")
         
         results['success'] = True
         print(f"\nPipeline completed successfully!")
@@ -212,7 +212,7 @@ def main():
     parser.add_argument(
         '--dry-run', '-d',
         action='store_true',
-        help='Run without uploading to Airtable'
+        help='Run without uploading to Supabase'
     )
     parser.add_argument(
         '--no-signals',

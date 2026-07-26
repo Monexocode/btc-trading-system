@@ -341,7 +341,7 @@ class ScoringEngine:
     def calculate_all_scores(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Calculate all scores and return as a dictionary.
-        Output keys are unchanged from v5 so Airtable upload code stays intact.
+        Output keys are unchanged from v5 so Supabase upload code stays intact.
         """
         direction    = self.calculate_direction_score(data)
         momentum     = self.calculate_momentum_score(data)
