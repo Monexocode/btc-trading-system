@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 BTC Trading System v6 - Main Entry Point
+Converts TradingView Pine Script logic to Python with Supabase integration.
 """
 
 import argparse
@@ -10,7 +11,7 @@ from typing import Dict, Any, Optional
 
 from data_fetcher import DataFetcher
 from scoring_engine import ScoringEngine
-from airtable_client import AirtableClient
+from supabase_client import SupabaseClient
 
 
 ENTRY_MODES = {
@@ -23,8 +24,6 @@ ENTRY_MODES = {
     'momentum':        {'threshold': 4.0, 'risk_reward': 1.5, 'description': 'Momentum-based entries'},
     'volume_profile':  {'threshold': 4.0, 'risk_reward': 1.5, 'description': 'Volume profile focus'},
 }
-
-_EMA_TREND_MAP = {'bullish': 1, 'neutral': 0, 'bearish': -1}
 
 
 def _fmt(value, fmt, fallback='N/A'):
@@ -51,9 +50,9 @@ def run_pipeline(mode: str = 'full_system', dry_run: bool = False,
     mode_config = ENTRY_MODES.get(mode, ENTRY_MODES['full_system'])
     threshold   = mode_config['threshold']
 
-    fetcher  = DataFetcher()
-    scorer   = ScoringEngine()
-    airtable = None if dry_run else AirtableClient()
+    fetcher = DataFetcher()
+    scorer  = ScoringEngine()
+    db      = None if dry_run else SupabaseClient()
 
     results = {
         'timestamp':   datetime.now().isoformat(),
@@ -87,64 +86,40 @@ def run_pipeline(mode: str = 'full_system', dry_run: bool = False,
         print(f"\nSignal: {signal} (threshold: ±{threshold})")
 
         if not dry_run:
-            print("\nUploading to Airtable...")
+            print("\nUploading to Supabase...")
 
-            btc   = market_data.get('btc_price', 0)
-            vah_v = market_data.get('vah', 0) or 0
-            val_v = market_data.get('val', 0) or 0
-            vah_val_num = 1 if btc > vah_v else -1 if btc < val_v else 0
-
-            cvd_futs    = market_data.get('cvd_futures')
-            vwap_pos    = market_data.get('vwap_position', '')
-            if cvd_futs is not None:
-                price_oi_val = 1 if (cvd_futs > 0 and vwap_pos == 'above') else \
-                              -1 if (cvd_futs < 0 and vwap_pos == 'below') else 0
-            else:
-                price_oi_val = 0
-
+            # Build daily record — macro/price/CVD/OI/liqs only.
+            # All technical indicator fields (poc, vwap, ema_trend, kc_bb_squeeze,
+            # kc_positioning, bb_positioning, vah_val, price_oi, vol_1_5, normal_box,
+            # breaking_point, vwap_band, swing levels, etc.) are owned by
+            # trading-tpi-pipeline and must NOT be written here to avoid collisions.
             daily_data = {
-                'btc':           market_data.get('btc_price'),
-                'oi':            market_data.get('oi_total'),
-                'cme_oi':        market_data.get('oi_cme'),
-                'funding':       market_data.get('funding_rate'),
-                'cvd_futs':      market_data.get('cvd_futures'),
-                'cvd_spot':      market_data.get('cvd_spot'),
-                'liqs_prev':     market_data.get('liquidations_24h'),
+                'btc':             market_data.get('btc_price'),
+                'oi':              market_data.get('oi_total'),
+                'cme_oi':          market_data.get('oi_cme'),
+                'funding':         market_data.get('funding_rate'),
+                'cvd_futs':        market_data.get('cvd_futures'),
+                'cvd_spot':        market_data.get('cvd_spot'),
+                'liqs_prev':       market_data.get('liquidations_24h'),
                 'liqs_prev_price': market_data.get('liqs_price'),
-                # poc/vwap/vwap_band omitted: tpi-pipeline owns those fields as normalized scores
-                'vah_val':       vah_val_num,
-                'price_oi':      price_oi_val,
-                'ema_trend':     _EMA_TREND_MAP.get(market_data.get('ema_trend', 'neutral'), 0),
-                'kc_bb_squeeze': 1 if market_data.get('squeeze') else 0,
-                'kc_positioning': market_data.get('kc_pos_value', 0),
-                'bb_positioning': market_data.get('bb_pos_value', 0),
-                'es':   market_data.get('es'),
-                'nq':   market_data.get('nq'),
-                'dxy':  market_data.get('dxy'),
-                'gold': market_data.get('gold'),
-                'vix':  market_data.get('vix'),
-                'bvix': market_data.get('bviv'),
-                'btc_d': market_data.get('btc_dominance'),
-                'strength_tw': scores.get('tpi'),
-                'synergy_tw':  scores.get('synergy'),
-                'vol_1_5': 1 if market_data.get('volume_spike') else 0,
-                'normal_box': 1 if market_data.get('box_high') is not None else 0,
-                'breaking_point': (
-                    1 if any([market_data.get('box_break_up'), market_data.get('swing_high_break'),
-                              market_data.get('pdh_break'), market_data.get('pwh_break')])
-                    else -1 if any([market_data.get('box_break_down'), market_data.get('swing_low_break'),
-                                    market_data.get('pdl_break'), market_data.get('pwl_break')])
-                    else 0
-                ),
+                'etf':             market_data.get('etf_flow'),
+                'es':              market_data.get('es'),
+                'nq':              market_data.get('nq'),
+                'dxy':             market_data.get('dxy'),
+                'gold':            market_data.get('gold'),
+                'vix':             market_data.get('vix'),
+                'bvix':            market_data.get('bviv'),
+                'btc_d':           market_data.get('btc_dominance'),
             }
+            # Remove None values to avoid overwriting tpi-pipeline fields
             daily_data = {k: v for k, v in daily_data.items() if v is not None}
 
-            daily_result = airtable.upsert_daily_data(daily_data)
+            daily_result = db.upsert_daily_data(daily_data)
             results['daily_upload'] = daily_result
             print(f"   Daily data: {'✓' if daily_result else '✗'}")
 
             if upload_signals:
-                signal_result = airtable.upload_15min_signal(
+                signal_result = db.upload_15min_signal(
                     btc_price=market_data.get('btc_price', 0),
                     total_score=total_score,
                     signal=signal,
@@ -161,7 +136,7 @@ def run_pipeline(mode: str = 'full_system', dry_run: bool = False,
                 results['signal_upload'] = signal_result
                 print(f"   15-min signal: {'✓' if signal_result else '✗'}")
         else:
-            print("\nDry run - skipping Airtable upload")
+            print("\nDry run - skipping Supabase upload")
 
         results['success'] = True
         print("\nPipeline completed successfully!")
@@ -177,7 +152,7 @@ def run_pipeline(mode: str = 'full_system', dry_run: bool = False,
 def main():
     parser = argparse.ArgumentParser(description='BTC Trading System v6')
     parser.add_argument('--mode', '-m', choices=list(ENTRY_MODES.keys()), default='full_system')
-    parser.add_argument('--dry-run', '-d', action='store_true')
+    parser.add_argument('--dry-run', '-d', action='store_true', help='Run without uploading to Supabase')
     parser.add_argument('--no-signals', action='store_true')
     parser.add_argument('--continuous', '-c', action='store_true')
     parser.add_argument('--list-modes', action='store_true')
